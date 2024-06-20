@@ -1,0 +1,65 @@
+CREATE CONSTRAINT ON (p:Person) ASSERT p.email_address IS UNIQUE;
+CREATE CONSTRAINT ON (e:Email) ASSERT e.emailid IS UNIQUE;
+CREATE CONSTRAINT ON (l:Label) ASSERT l.name IS UNIQUE;
+
+// Load and create Email nodes
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+MERGE (e:Email {emailid: row.emailid})
+ON CREATE SET e.fromaddress = row.fromaddress,
+              e.to = row.to,
+              e.subject = row.subject,
+              e.body_content = row.body_content,
+              e.sentdate = datetime(row.sentdate),
+              e.label_scores = row.label_scores;
+
+// Create Person nodes for 'fromaddress' and 'to'
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+MERGE (sender:Person {email_address: row.fromaddress})
+MERGE (recipient:Person {email_address: row.to})
+WITH row, sender, recipient
+MATCH (e:Email {emailid: row.emailid})
+MERGE (e)-[:SENT_BY]->(sender)
+MERGE (e)-[:SENT_TO]->(recipient);
+
+// Create Person nodes for 'cc'
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+WITH row, apoc.convert.fromJsonList(row.cc) AS ccAddresses
+UNWIND ccAddresses AS ccAddress
+MERGE (ccPerson:Person {email_address: ccAddress})
+WITH row, ccPerson
+MATCH (e:Email {emailid: row.emailid})
+MERGE (e)-[:CC]->(ccPerson);
+
+// Create Person nodes for 'bcc'
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+WITH row, apoc.convert.fromJsonList(row.bcc) AS bccAddresses
+UNWIND bccAddresses AS bccAddress
+MERGE (bccPerson:Person {email_address: bccAddress})
+WITH row, bccPerson
+MATCH (e:Email {emailid: row.emailid})
+MERGE (e)-[:BCC]->(bccPerson);
+
+// Create REPLY_TO relationships
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+WITH row, apoc.convert.fromJsonMap(row.inreplyto) AS inreplyToEmail
+MATCH (e:Email {emailid: row.emailid})
+MATCH (replyTo:Email {emailid: apoc.text.replace(inreplyToEmail, '[<>]', '')})
+MERGE (e)-[:REPLY_TO]->(replyTo);
+
+// Create REFERENCES relationships
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+WITH row, apoc.convert.fromJsonList(row.references) AS referenceEmails
+UNWIND referenceEmails AS refEmail
+MATCH (e:Email {emailid: row.emailid})
+MATCH (ref:Email {emailid: apoc.text.replace(refEmail, '[<>]', '')})
+MERGE (e)-[:REFERENCES]->(ref);
+
+// Create Label nodes and HAS_LABEL relationships
+LOAD CSV WITH HEADERS FROM 'file:///large_emails_dataset.csv' AS row
+WITH row, apoc.convert.fromJsonMap(row.label_scores) AS labelKeyValue
+UNWIND keys(labelKeyValue) AS labelName
+MERGE (label:Label {name: labelName})
+WITH row, label, labelKeyValue[labelName] AS score
+MATCH (e:Email {emailid: row.emailid})
+MERGE (e)-[r:HAS_LABEL]->(label)
+SET r.score = score;
