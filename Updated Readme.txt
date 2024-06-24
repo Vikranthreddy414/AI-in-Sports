@@ -1,183 +1,268 @@
+import streamlit as st
 import pandas as pd
+import os
+from datetime import datetime, timedelta
+import plotly.express as px
+import plotly.graph_objects as go
 
-# Read the CSV file
-df = pd.read_csv('data.csv')
+# Set up logging
+import logging
 
-# Function to combine topics and keywords into a single text string
-def combine_text(row):
-    topics = row['topics'].strip("[]").replace("'", "").split(", ")
-    keywords = row['keywords'].strip("[]").replace("'", "").split(", ")
-    
-    # Convert topics list to a single string
-    topic_text = " ".join(topics) if topics else "Topic not specified."
-    
-    # Convert keywords list to a single string
-    keyword_text = ", ".join(keywords)
-    
-    return f"Topic: {topic_text}. Keywords: {keyword_text}."
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Apply function to create combined_text column
-df['combined_text'] = df.apply(combine_text, axis=1)
+def load_data(file_path: str) -> pd.DataFrame:
+    """Load data from a CSV file."""
+    try:
+        data = pd.read_csv(file_path)
+        logger.info(f"Successfully loaded data from {file_path}")
+        return data
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        st.error(f"File not found: {file_path}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error loading data from {file_path}: {e}")
+        st.error(f"Error loading data from {file_path}")
+        return pd.DataFrame()
 
-# Save the resulting DataFrame to a new CSV file
-df.to_csv('combined_data.csv', index=False)
+def display_emails_by_topic(df: pd.DataFrame, topic_number: int):
+    """Display emails filtered by topic number."""
+    filtered_emails = df[df['topic_number'] == topic_number][['cleaned_subject', 'cleaned_body']]
+    st.write(filtered_emails.head(5))
+    csv = filtered_emails.to_csv(index=False)
+    st.download_button(
+        label=f"Download all emails for Topic {topic_number}",
+        data=csv,
+        file_name=f'filtered_emails_topic_{topic_number}.csv',
+        mime='text/csv',
+    )
 
-# Display DataFrame
-print(df)
+def display_filtered_data(df: pd.DataFrame, label: str):
+    """Display filtered data by label."""
+    filtered_data = df[df['label'] == label][['Topic', 'Count', 'OpenAI', 'KeyBert']]
+    st.write(filtered_data)
+    for topic in filtered_data['Topic']:
+        if st.button(f'Click me for Topic {topic}', key=f'clickme_{label}_{topic}'):
+            st.session_state.selected_topic = topic
+            st.experimental_rerun()
 
+def main():
+    st.sidebar.header("Filters")
+    selected_date = st.sidebar.date_input("Select a date", value=None, key="main_date")
 
-# Import necessary libraries
-from sentence_transformers import SentenceTransformer
-from transformers import pipeline, Trainer, TrainingArguments, BertTokenizer, BertForSequenceClassification
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from scipy.spatial.distance import cdist
-import pandas as pd
-from datasets import load_dataset
-import ast
-import re
+    st.markdown("<h1 style='text-align: center; color: black;'>Angry Email Analysis</h1>", unsafe_allow_html=True)
 
-# Function for basic text cleaning
-def clean_text(text):
-    # Remove leading/trailing spaces and convert to lowercase
-    text = text.strip().lower()
-    # Remove extraneous characters if any (example: quotes, brackets)
-    text = re.sub(r"[\"\[\]]", "", text)
-    return text
+    if 'date_selected' not in st.session_state:
+        st.session_state.date_selected = False
 
-# Step 1: Load Labeled Data
-df = pd.read_csv('labeled_data.csv')  # Replace 'labeled_data.csv' with the path to your file
+    if selected_date:
+        st.session_state.date_selected = True
 
-# Preprocess data: Convert string representations of lists to actual lists and clean text
-df['text'] = df['Topic'].apply(lambda x: clean_text(ast.literal_eval(x)[0]))  # Convert to string and clean
-df['keywords'] = df['keywords'].apply(lambda x: [clean_text(keyword) for keyword in ast.literal_eval(x)])  # Convert to list and clean
-df['label'] = df['label'].astype(str).apply(clean_text)  # Ensure labels are strings and clean
+    if not st.session_state.date_selected:
+        st.markdown("<p style='text-align: center; font-style: italic; color: black;'>Please select the date from the left side bar</p>", unsafe_allow_html=True)
 
-# Extract data
-text_data = df['text'].tolist()
-keywords_data = df['keywords'].tolist()
-labels_data = df['label'].tolist()
+    if st.session_state.date_selected and selected_date:
+        year = selected_date.year
+        month = f"{selected_date.month:02d}"
+        day = f"{selected_date.day:02d}"
+        yyyymmdd = f"{year}{month}{day}"
 
-# Extract unique domain labels
-domain_labels = list(set(labels_data))
+        base_folder = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\"
+        results_file_path = os.path.join(base_folder, f"results_{yyyymmdd}.csv")
+        topic_summary_file_path = os.path.join(base_folder, f"topic_summary_{yyyymmdd}.csv")
 
-# Step 2: Load Models
-sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-zero_shot_classifier = pipeline('zero-shot-classification', model='facebook/bart-large-mnli')
+        if os.path.exists(results_file_path) and os.path.exists(topic_summary_file_path):
+            topic_info = load_data(topic_summary_file_path)
+            df_results = load_data(results_file_path)
 
-# Step 3: Create Embeddings for Domain Labels
-domain_label_embeddings = sentence_model.encode(domain_labels)
+            if topic_info.empty or df_results.empty:
+                st.error("Error loading data, please check the logs.")
+                return
 
-# Step 4: Fine-tune a BERT model on your labeled data
-# Prepare dataset for fine-tuning
-dataset = pd.DataFrame({'text': text_data, 'label': labels_data})
-dataset.to_csv('fine_tuning_data.csv', index=False)
+            candidate_labels = ["Payroll", "Tax", "System", "Benefits", "Support", "Banking", "Training", "Hiring", "Miscellaneous"]
 
-# Load dataset using Hugging Face's datasets library
-dataset = load_dataset('csv', data_files='fine_tuning_data.csv')
+            label_counts = pd.DataFrame({'label': candidate_labels, 'Count': [0] * len(candidate_labels)})
 
-# Load tokenizer and BERT model
-tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-model = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=len(domain_labels))
+            label_counts_actual = topic_info.groupby('label')['Count'].sum().reset_index()
 
-# Tokenize data
-def tokenize_function(examples):
-    return tokenizer(examples['text'], padding='max_length', truncation=True)
+            label_counts = label_counts.merge(label_counts_actual, on='label', how='left').fillna(0)
+            label_counts['Count'] = label_counts['Count_x'] + label_counts['Count_y']
+            label_counts = label_counts[['label', 'Count']].astype({'Count': 'int'})
 
-tokenized_datasets = dataset.map(tokenize_function, batched=True)
+            st.markdown("""
+                <style>
+                .main-title {
+                    font-size: 2.5rem;
+                    font-weight: bold;
+                    color: #333;
+                    text-align: center;
+                }
+                .sub-header {
+                    font-size: 1.5rem;
+                    color: #555;
+                    text-align: center;
+                }
+                .section-header {
+                    font-size: 1.25rem;
+                    color: #777;
+                    margin-top: 2rem;
+                    margin-bottom: 1rem;
+                    text-align: center;
+                }
+                .count-box {
+                    border: 1px solid #ddd;
+                    border-radius: 5px;
+                    padding: 10px;
+                    text-align: center;
+                    font-size: 1.1rem;
+                    font-weight: bold;
+                    color: #333;
+                    margin-bottom: 10px;
+                    width: 120px;
+                    background-color: #f9f9f9;
+                    cursor: pointer;
+                }
+                .count-box:hover {
+                    background-color: #e6e6e6;
+                }
+                .button-grid {
+                    display: flex;
+                    flex-wrap: wrap;
+                    justify-content: center;
+                }
+                .button-grid > div {
+                    margin: 5px;
+                }
+                </style>
+            """, unsafe_allow_html=True)
 
-# Map labels to indices
-label2id = {label: idx for idx, label in enumerate(domain_labels)}
-id2label = {idx: label for label, idx in label2id.items()}
+            if 'selected_topic' not in st.session_state:
+                st.session_state.selected_topic = None
+            if 'selected_category' not in st.session_state:
+                st.session_state.selected_category = None
 
-def encode_labels(examples):
-    examples['label'] = [label2id[label] for label in examples['label']]
-    return examples
+            st.markdown('<div class="sub-header">Email Counts by Label</div>', unsafe_allow_html=True)
 
-tokenized_datasets = tokenized_datasets.map(encode_labels, batched=True)
+            cols = st.columns(3)
+            buttons_per_col = -(-len(label_counts) // 3)
 
-# Training arguments
-training_args = TrainingArguments(
-    output_dir='./results',
-    evaluation_strategy='epoch',
-    learning_rate=2e-5,
-    per_device_train_batch_size=16,
-    per_device_eval_batch_size=16,
-    num_train_epochs=3,
-    weight_decay=0.01,
-)
+            for idx, (label, count) in enumerate(label_counts.itertuples(index=False)):
+                col = cols[idx % 3]
+                with col:
+                    if st.button(f"{label}: {int(count)}", key=f"label_{label}"):
+                        st.session_state.selected_category = label
+                        st.session_state.selected_topic = None
+                        st.experimental_rerun()
 
-# Trainer
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=tokenized_datasets['train'],
-    eval_dataset=tokenized_datasets['validation'],
-)
+            if st.session_state.selected_category:
+                st.write(f"{st.session_state.selected_category} related angry emails:")
+                display_filtered_data(topic_info, st.session_state.selected_category)
 
-# Train model
-trainer.train()
+            if st.session_state.selected_topic is not None:
+                st.markdown(f'<div class="section-header">Emails for Topic {st.session_state.selected_topic}</div>', unsafe_allow_html=True)
+                display_emails_by_topic(df_results, st.session_state.selected_topic)
 
-# Step 5: Zero-Shot Classification
-def zero_shot_classify(topic, candidate_labels):
-    result = zero_shot_classifier(topic, candidate_labels)
-    return result['labels'][0]  # Top prediction
+        else:
+            st.error("Sorry, I don't have data for the selected date")
 
-# Step 6: Compute Similarity Scores
-def sentence_transformer_classify(topic, keywords, domain_label_embeddings, domain_labels):
-    # Encode topic using Sentence Transformers
-    topic_embedding = sentence_model.encode(topic)
-    avg_keyword_embedding = np.mean(sentence_model.encode(keywords), axis=0)
-    combined_embedding = 0.5 * (topic_embedding + avg_keyword_embedding)
-    
-    # Compute similarity with domain labels
-    cosine_similarities = 1 - cdist([combined_embedding], domain_label_embeddings, 'cosine')
-    return domain_labels[np.argmax(cosine_similarities)]
+def trends():
+    st.sidebar.header("Trends")
+    start_date = st.sidebar.date_input("Start date", key="start_date", value=None)
+    end_date = st.sidebar.date_input("End date", key="end_date", value=None)
 
-# Step 7: Combine Results
-def classify_topic(topic, keywords, zero_shot_classifier, sentence_model, domain_label_embeddings, domain_labels, model, tokenizer):
-    zero_shot_label = zero_shot_classify(topic, domain_labels)
-    st_label = sentence_transformer_classify(topic, keywords, domain_label_embeddings, domain_labels)
-    
-    # Tokenize and classify using fine-tuned BERT
-    inputs = tokenizer(topic, return_tensors='pt')
-    outputs = model(**inputs)
-    bert_prediction = outputs.logits.argmax(-1).item()
-    bert_label = domain_labels[bert_prediction]
-    
-    # Weighted combination of predictions
-    predictions = {
-        'zero_shot': zero_shot_label,
-        'sentence_transformer': st_label,
-        'bert': bert_label
-    }
-    
-    # Simple heuristic: prioritize Sentence Transformer and BERT results
-    if st_label == bert_label:
-        return st_label
+    st.markdown("<h1 style='text-align: center; color: black;'>Trend Analysis</h1>", unsafe_allow_html=True)
+
+    if not start_date or not end_date:
+        st.markdown("<p style='text-align: center; font-style: italic; color: black;'>Please select the date range from the left side bar</p>", unsafe_allow_html=True)
     else:
-        # Implement a more complex heuristic or weighted voting if needed
-        return bert_label
+        if start_date > end_date:
+            st.error("End date must be after start date")
+            return
 
-# Classify each topic
-for topic, kw in zip(text_data, keywords_data):
-    combined_label = classify_topic(topic, kw, zero_shot_classifier, sentence_model, domain_label_embeddings, domain_labels, model, tokenizer)
-    print(f"Topic: {topic}\nCombined Label: {combined_label}\n")
+        all_data = []
+        current_date = start_date
 
-# Step 8: Implement Active Learning (simplified example)
-def active_learning_feedback(topic, actual_label, model, tokenizer, domain_labels):
-    # Encode the new topic
-    inputs = tokenizer(topic, return_tensors='pt')
-    actual_label_id = domain_labels.index(actual_label)
-    
-    # Add the new example to the training data
-    new_example = {'text': topic, 'label': actual_label_id}
-    tokenized_datasets['train'] = tokenized_datasets['train'].add_item(new_example)
-    
-    # Retrain the model with the new data
-    trainer.train()
+        while current_date <= end_date:
+            year = current_date.year
+            month = f"{current_date.month:02d}"
+            day = f"{current_date.day:02d}"
+            yyyymmdd = f"{year}{month}{day}"
 
-# Simulate feedback loop
-new_topic = "Issue with tax filings and IRS submissions"
-actual_label = "Tax"
-active_learning_feedback(new_topic, actual_label, model, tokenizer, domain_labels)
+            topic_summary_file_path = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\topic_summary_{yyyymmdd}.csv"
+            if os.path.exists(topic_summary_file_path):
+                data = load_data(topic_summary_file_path)
+                if not data.empty:
+                    data['date'] = current_date
+                    all_data.append(data)
+            else:
+                st.error(f"Sorry, I don't have data for the selected date range")
+                return
+
+            current_date += timedelta(days=1)
+
+        if all_data:
+            aggregated_data = pd.concat(all_data)
+            selected_labels = st.multiselect("Select Labels", options=aggregated_data['label'].unique(), default=aggregated_data['label'].unique())
+            if selected_labels:
+                display_trends(aggregated_data, selected_labels)
+
+def display_trends(data: pd.DataFrame, selected_labels: list):
+    trend_data = data[data['label'].isin(selected_labels)].groupby(['date', 'label'])['Count'].sum().reset_index()
+    trend_data['date'] = pd.to_datetime(trend_data['date']).dt.date  # Ensure date format is correct
+
+    # Total count of emails
+    total_emails = trend_data['Count'].sum()
+    st.markdown(f"### Total Emails: {total_emails}")
+
+    # Total volume per label
+    volume_per_label = trend_data.groupby('label')['Count'].sum().reset_index()
+    st.markdown("### Total Volume per Label")
+    fig_volume = px.bar(volume_per_label, x='label', y='Count', title='Total Volume per Label', text='Count')
+    fig_volume.update_traces(marker_color='dodgerblue')
+    fig_volume.update_layout(
+        xaxis_title='Label',
+        yaxis_title='Count',
+        template='plotly_white',
+        title_x=0.5,
+        showlegend=False
+    )
+    st.plotly_chart(fig_volume, use_container_width=True)
+
+    # Total count per day with respect to label - trend graph
+    st.markdown("### Trend of Emails per Day by Label")
+    fig_trend = px.line(trend_data, x='date', y='Count', color='label', title='Trend of Selected Labels over time', line_shape='spline')
+    fig_trend.update_layout(
+        xaxis_title='Date',
+        yaxis_title='Count',
+        template='plotly_white',
+        title_x=0.5,
+        showlegend=True
+    )
+    fig_trend.update_xaxes(dtick="D1", tickformat="%Y-%m-%d")
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+    # Difference from last day for each label
+    trend_data['previous_day'] = trend_data.groupby('label')['Count'].shift(1)
+    trend_data['difference'] = trend_data['Count'] - trend_data['previous_day']
+    difference_per_label = trend_data.groupby('label').apply(lambda x: x.iloc[-1])[['label', 'difference']].reset_index(drop=True)
+    st.markdown("### Difference from Last Day for Each Label")
+    fig_difference = px.bar(difference_per_label, x='label', y='difference', title='Difference from Last Day for Each Label', text='difference')
+    fig_difference.update_traces(marker_color='lightcoral')
+    fig_difference.update_layout(
+        xaxis_title='Label',
+        yaxis_title='Difference',
+        template='plotly_white',
+        title_x=0.5,
+        showlegend=False
+    )
+    st.plotly_chart(fig_difference, use_container_width=True)
+
+if __name__ == "__main__":
+    st.sidebar.title("Angry Email Analysis")
+    page = st.sidebar.selectbox("Choose a page", ["Main", "Trends"])
+
+    if page == "Main":
+        main()
+    elif page == "Trends":
+        trends()
