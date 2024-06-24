@@ -68,7 +68,7 @@ def main():
         day = f"{selected_date.day:02d}"
         yyyymmdd = f"{year}{month}{day}"
 
-        base_folder = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\"
+        base_folder = f"C:\\Users\\s_analysis\\{year}\\{month}\\{day}\\"
         results_file_path = os.path.join(base_folder, f"results_{yyyymmdd}.csv")
         topic_summary_file_path = os.path.join(base_folder, f"topic_summary_{yyyymmdd}.csv")
 
@@ -80,7 +80,7 @@ def main():
                 st.error("Error loading data, please check the logs.")
                 return
 
-            candidate_labels = ["Payroll", "Tax", "System", "Benefits", "Support", "Banking", "Training", "Hiring", "Miscellaneous"]
+            candidate_labels = []
 
             label_counts = pd.DataFrame({'label': candidate_labels, 'Count': [0] * len(candidate_labels)})
 
@@ -189,7 +189,7 @@ def trends():
             day = f"{current_date.day:02d}"
             yyyymmdd = f"{year}{month}{day}"
 
-            topic_summary_file_path = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\topic_summary_{yyyymmdd}.csv"
+            topic_summary_file_path = f"C:\\User\\s_analysis\\{year}\\{month}\\{day}\\topic_summary_{yyyymmdd}.csv"
             if os.path.exists(topic_summary_file_path):
                 data = load_data(topic_summary_file_path)
                 if not data.empty:
