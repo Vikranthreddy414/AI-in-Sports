@@ -3,9 +3,6 @@ import pandas as pd
 import os
 from datetime import datetime, timedelta
 import plotly.express as px
-import plotly.graph_objects as go
-import boto3
-from botocore.exceptions import NoCredentialsError
 
 # Set up logging
 import logging
@@ -15,27 +12,19 @@ logger = logging.getLogger(__name__)
 
 st.set_page_config(layout="wide")
 
-# Initialize S3 client
-s3 = boto3.client('s3')
-
-def load_data_from_s3(bucket_name: str, file_path: str) -> pd.DataFrame:
-    """Load data from a CSV file in S3."""
+def load_data(file_path: str) -> pd.DataFrame:
+    """Load data from a CSV file."""
     try:
-        obj = s3.get_object(Bucket=bucket_name, Key=file_path)
-        data = pd.read_csv(obj['Body'])
-        logger.info(f"Successfully loaded data from s3://{bucket_name}/{file_path}")
+        data = pd.read_csv(file_path)
+        logger.info(f"Successfully loaded data from {file_path}")
         return data
-    except s3.exceptions.NoSuchKey:
-        logger.error(f"File not found: s3://{bucket_name}/{file_path}")
-        st.error(f"File not found: s3://{bucket_name}/{file_path}")
-        return pd.DataFrame()
-    except NoCredentialsError:
-        logger.error("Credentials not available for S3")
-        st.error("Credentials not available for S3")
+    except FileNotFoundError:
+        logger.error(f"File not found: {file_path}")
+        st.error(f"File not found: {file_path}")
         return pd.DataFrame()
     except Exception as e:
-        logger.error(f"Error loading data from s3://{bucket_name}/{file_path}: {e}")
-        st.error(f"Error loading data from s3://{bucket_name}/{file_path}")
+        logger.error(f"Error loading data from {file_path}: {e}")
+        st.error(f"Error loading data from {file_path}")
         return pd.DataFrame()
 
 def display_emails_by_topic(df: pd.DataFrame, topic_number: int):
@@ -55,15 +44,36 @@ def display_filtered_data(df: pd.DataFrame, label: str):
     filtered_data = df[df['label'] == label][['Topic', 'Count', 'OpenAI', 'KeyBert']]
     st.write(filtered_data)
     for topic in filtered_data['Topic']:
-        if st.button(f'View Topic {topic} Emails', key=f'view_{label}_{topic}'):
+        if st.button(f'Click me for Topic {topic}', key=f'clickme_{label}_{topic}'):
             st.session_state.selected_topic = topic
             st.experimental_rerun()
 
+def get_last_7_days_data(selected_date):
+    all_data = []
+    for i in range(7):
+        date = selected_date - timedelta(days=i)
+        year = date.year
+        month = f"{date.month:02d}"
+        day = f"{date.day:02d}"
+        yyyymmdd = f"{year}{month}{day}"
+        base_folder = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\"
+        topic_summary_file_path = os.path.join(base_folder, f"topic_summary_{yyyymmdd}.csv")
+        if os.path.exists(topic_summary_file_path):
+            data = load_data(topic_summary_file_path)
+            if not data.empty:
+                data['date'] = date
+                all_data.append(data)
+    if all_data:
+        return pd.concat(all_data)
+    else:
+        return pd.DataFrame()
+
 def main():
     st.sidebar.header("Filters")
-    selected_date = st.sidebar.date_input("Select a date", value=None, key="main_date", min_value=datetime(2024, 6, 14))
+    selected_date = st.sidebar.date_input("Select a date", value=None, key="main_date")
 
     st.markdown("<h1 style='text-align: center; color: black;'>Angry Email Analysis</h1>", unsafe_allow_html=True)
+    st.markdown("<hr>", unsafe_allow_html=True)  # Add a horizontal line
 
     if 'date_selected' not in st.session_state:
         st.session_state.date_selected = False
@@ -80,19 +90,43 @@ def main():
         day = f"{selected_date.day:02d}"
         yyyymmdd = f"{year}{month}{day}"
 
-        bucket_name = 'datascience'
-        base_folder = f"angryemails_analysis/{year}/{month}/{day}/"
+        base_folder = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\"
         results_file_path = os.path.join(base_folder, f"results_{yyyymmdd}.csv")
         topic_summary_file_path = os.path.join(base_folder, f"topic_summary_{yyyymmdd}.csv")
 
-        if check_s3_file_exists(bucket_name, results_file_path) and check_s3_file_exists(bucket_name, topic_summary_file_path):
-            topic_info = load_data_from_s3(bucket_name, topic_summary_file_path)
-            df_results = load_data_from_s3(bucket_name, results_file_path)
+        if os.path.exists(results_file_path) and os.path.exists(topic_summary_file_path):
+            topic_info = load_data(topic_summary_file_path)
+            df_results = load_data(results_file_path)
 
             if topic_info.empty or df_results.empty:
                 st.error("Error loading data, please check the logs.")
                 return
 
+            # Calculate Total Emails for the Selected Date
+            total_emails_today = topic_info['Count'].sum()
+
+            # Load data for the previous day
+            previous_date = selected_date - timedelta(days=1)
+            prev_year = previous_date.year
+            prev_month = f"{previous_date.month:02d}"
+            prev_day = f"{previous_date.day:02d}"
+            prev_yyyymmdd = f"{prev_year}{prev_month}{prev_day}"
+
+            prev_base_folder = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{prev_year}\\{prev_month}\\{prev_day}\\"
+            prev_topic_summary_file_path = os.path.join(prev_base_folder, f"topic_summary_{prev_yyyymmdd}.csv")
+
+            if os.path.exists(prev_topic_summary_file_path):
+                prev_topic_info = load_data(prev_topic_summary_file_path)
+                total_emails_previous_day = prev_topic_info['Count'].sum()
+                prev_label_counts = prev_topic_info.groupby('label')['Count'].sum().reset_index()
+            else:
+                total_emails_previous_day = 0  # If no data for the previous day, assume 0 emails
+                prev_label_counts = pd.DataFrame({'label': candidate_labels, 'Count': [0] * len(candidate_labels)})
+
+            # Calculate the difference
+            email_difference = total_emails_today - total_emails_previous_day
+
+            # Display the metrics
             candidate_labels = ["Payroll", "Tax", "System", "Benefits", "Support", "Banking", "Training", "Hiring", "Miscellaneous"]
 
             label_counts = pd.DataFrame({'label': candidate_labels, 'Count': [0] * len(candidate_labels)})
@@ -103,6 +137,64 @@ def main():
             label_counts['Count'] = label_counts['Count_x'] + label_counts['Count_y']
             label_counts = label_counts[['label', 'Count']].astype({'Count': 'int'})
 
+            # Calculate the difference for each label
+            label_diff = label_counts.merge(prev_label_counts, on='label', how='left', suffixes=('_today', '_previous'))
+            label_diff['Count_diff'] = label_diff['Count_today'] - label_diff['Count_previous']
+            label_diff = label_diff[['label', 'Count_today', 'Count_diff']]
+
+            # Create a single row for all labels
+            st.markdown('<div class="button-grid">', unsafe_allow_html=True)
+            cols = st.columns([1, 1, 1, 1, 1, 1, 1, 1, 1])
+            labels = ["Payroll", "System", "Support", "Miscellaneous", "Tax", "Banking", "Training", "Hiring", "Benefits"]
+            for idx, label in enumerate(labels):
+                count_today = label_diff.loc[label_diff['label'] == label, 'Count_today'].values[0]
+                count_diff = label_diff.loc[label_diff['label'] == label, 'Count_diff'].values[0]
+                diff_str = f" ({count_diff:+})"  # Format the difference with a sign
+                with cols[idx]:
+                    if st.button(f"{label}: {int(count_today)}{diff_str}", key=f"label_{label}"):
+                        st.session_state.selected_category = label
+                        st.session_state.selected_topic = None
+                        st.experimental_rerun()
+            st.markdown('</div>', unsafe_allow_html=True)
+
+            # Metrics in the center
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric(label="Total Emails", value=total_emails_today)
+            with col2:
+                st.metric(label="Change from Previous Day", value=email_difference)
+
+            # Load data for the last 7 days
+            last_7_days_data = get_last_7_days_data(selected_date)
+
+            # Filtered data for chart
+            if 'selected_category' in st.session_state and st.session_state.selected_category:
+                last_7_days_data = last_7_days_data[last_7_days_data['label'] == st.session_state.selected_category]
+                chart_title = f"{st.session_state.selected_category} Email Count for Last 7 Days"
+            else:
+                chart_title = "Overall Email Count for Last 7 Days"
+
+            # Determine layout based on selection
+            if 'selected_category' in st.session_state and st.session_state.selected_category:
+                col1, col2 = st.columns([2, 1])
+            else:
+                col1 = st.container()
+                col2 = None
+
+            # Plot the line chart
+            if not last_7_days_data.empty:
+                trend_data = last_7_days_data.groupby('date')['Count'].sum().reset_index()
+                fig_trend = px.line(trend_data, x='date', y='Count', title=chart_title)
+                fig_trend.update_layout(
+                    xaxis_title='Date', 
+                    yaxis_title='Count', 
+                    template='plotly_white', 
+                    title_x=0.5,
+                    height=400,  # Adjust height here
+                    margin=dict(l=20, r=20, t=40, b=20)  # Adjust margins here
+                )
+                col1.plotly_chart(fig_trend, use_container_width=True)
+            
             st.markdown("""
                 <style>
                 .main-title {
@@ -141,11 +233,13 @@ def main():
                 }
                 .button-grid {
                     display: flex;
-                    flex-wrap: wrap;
                     justify-content: center;
+                    flex-wrap: wrap;
+                    gap: 10px;
+                    margin-bottom: 20px;
                 }
-                .button-grid > div {
-                    margin: 5px;
+                .button-grid button {
+                    min-width: 120px;
                 }
                 </style>
             """, unsafe_allow_html=True)
@@ -155,45 +249,23 @@ def main():
             if 'selected_category' not in st.session_state:
                 st.session_state.selected_category = None
 
-            st.markdown('<div class="sub-header">Email Counts by Label</div>', unsafe_allow_html=True)
+            # Display the emails related to the selected topic
+            if col2 and st.session_state.selected_category:
+                with col2:
+                    st.markdown(f"<b>{st.session_state.selected_category} related angry emails:</b>", unsafe_allow_html=True)
+                    display_filtered_data(topic_info, st.session_state.selected_category)
 
-            cols = st.columns(3)
-            buttons_per_col = -(-len(label_counts) // 3)
-
-            for idx, (label, count) in enumerate(label_counts.itertuples(index=False)):
-                col = cols[idx % 3]
-                with col:
-                    if st.button(f"{label}: {int(count)}", key=f"label_{label}"):
-                        st.session_state.selected_category = label
-                        st.session_state.selected_topic = None
-                        st.experimental_rerun()
-
-            if st.session_state.selected_category:
-                st.write(f"{st.session_state.selected_category} related angry emails:")
-                display_filtered_data(topic_info, st.session_state.selected_category)
-
-            if st.session_state.selected_topic is not None:
-                st.markdown(f'<div class="section-header">Emails for Topic {st.session_state.selected_topic}</div>', unsafe_allow_html=True)
-                display_emails_by_topic(df_results, st.session_state.selected_topic)
+                    if st.session_state.selected_topic is not None:
+                        st.markdown(f'<div class="section-header">Emails for Topic {st.session_state.selected_topic}</div>', unsafe_allow_html=True)
+                        display_emails_by_topic(df_results, st.session_state.selected_topic)
 
         else:
             st.error("Sorry, I don't have data for the selected date")
 
-def check_s3_file_exists(bucket_name: str, file_path: str) -> bool:
-    """Check if a file exists in S3."""
-    try:
-        s3.head_object(Bucket=bucket_name, Key=file_path)
-        return True
-    except s3.exceptions.ClientError as e:
-        if e.response['Error']['Code'] == '404':
-            return False
-        else:
-            raise
-
 def trends():
     st.sidebar.header("Trends")
-    start_date = st.sidebar.date_input("Start date", key="start_date", value=None, min_value=datetime(2024, 6, 14))
-    end_date = st.sidebar.date_input("End date", key="end_date", value=None, min_value=datetime(2024, 6, 14))
+    start_date = st.sidebar.date_input("Start date", key="start_date", value=None)
+    end_date = st.sidebar.date_input("End date", key="end_date", value=None)
 
     st.markdown("<h1 style='text-align: center; color: black;'>Trend Analysis</h1>", unsafe_allow_html=True)
 
@@ -213,9 +285,9 @@ def trends():
             day = f"{current_date.day:02d}"
             yyyymmdd = f"{year}{month}{day}"
 
-            topic_summary_file_path = f"angryemails_analysis/{year}/{month}/{day}/topic_summary_{yyyymmdd}.csv"
-            if check_s3_file_exists('datascience', topic_summary_file_path):
-                data = load_data_from_s3('datascience', topic_summary_file_path)
+            topic_summary_file_path = f"C:\\Users\\vikra\\Downloads\\angry_emails_analysis\\{year}\\{month}\\{day}\\topic_summary_{yyyymmdd}.csv"
+            if os.path.exists(topic_summary_file_path):
+                data = load_data(topic_summary_file_path)
                 if not data.empty:
                     data['date'] = current_date
                     all_data.append(data)
